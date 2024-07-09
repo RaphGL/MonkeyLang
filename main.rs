@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 mod lexer;
+mod parser;
 
 use crate::lexer::{Lexer, Token};
 
