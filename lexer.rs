@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::{iter::Peekable, str::Chars};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,6 +41,54 @@ pub enum Token {
     If,
     Else,
     Return,
+}
+
+impl Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Token::Illegal => "illegal",
+                Token::Eof => "eof",
+
+                // identifiers + literals
+                Token::Ident(ident) => ident.as_str(),
+                Token::Int(int) => int.as_str(),
+
+                // operators
+                Token::Assign => "=",
+                Token::Plus => "+",     // +
+                Token::Minus => "-",    // -
+                Token::Bang => "!",     // !
+                Token::Asterisk => "*", // *
+                Token::Slash => "/",    // /
+
+                Token::LT => "<",     // <
+                Token::GT => ">",     // >
+                Token::Eq => "==",    // ==
+                Token::NotEq => "!=", // !=
+
+                // delimiters
+                Token::Comma => ",",
+                Token::Semicolon => ";",
+
+                Token::LParen => "(",
+                Token::RParen => ")",
+                Token::LBrace => "{",
+                Token::RBrace => "}",
+
+                // keywords
+                Token::Function => "fn",
+                Token::Let => "let",
+                Token::True => "true",
+                Token::False => "false",
+                Token::If => "if",
+                Token::Else => "else",
+                Token::Return => "return",
+            }
+        )
+    }
 }
 
 pub struct Lexer<'a> {

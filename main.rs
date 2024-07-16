@@ -20,7 +20,7 @@ fn main() {
 
         loop {
             let token = lexer.next_token();
-            if matches!(token, Token::Eof) {
+            if let Token::Eof = token {
                 break;
             }
 
