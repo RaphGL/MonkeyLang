@@ -1,26 +1,32 @@
 use crate::lexer::{Lexer, Token};
 
 #[derive(Debug, PartialEq)]
-enum Expression {
+pub enum Expression {
     Int(i64),
     Ident(String),
     PrefixNeg(Box<Expression>),
     PrefixNot(Box<Expression>),
     Boolean(bool),
+
     Infix {
         left: Box<Expression>,
         op: Token,
         right: Box<Expression>,
     },
+
+    If {
+        condition: Box<Expression>,
+        consequence: Box<Statement>,
+        alternative: Option<Box<Statement>>,
+    },
 }
 
+#[derive(Debug, PartialEq)]
 pub enum Statement {
-    Let {
-        name: Token,
-        // value: Expression
-    },
-    Return, // (value: Expr);
+    Let { name: Token, value: Expression },
+    Return(Option<Expression>),
     ExpressionStmt(Expression),
+    Block(Vec<Statement>),
 }
 
 #[derive(Clone)]
@@ -56,7 +62,7 @@ pub struct Parser<'a> {
     lexer: Lexer<'a>,
     curr_token: Token,
     next_token: Token,
-    errors: Vec<String>,
+    pub errors: Vec<String>,
 }
 
 impl<'a> Parser<'a> {
@@ -80,7 +86,7 @@ impl<'a> Parser<'a> {
     fn peek_error(&mut self, expected_token: Token) {
         self.errors.push(format!(
             "expected next token to be {expected_token:?} found {:?}",
-            self.curr_token
+            self.next_token
         ));
     }
 
@@ -92,32 +98,57 @@ impl<'a> Parser<'a> {
 
         self.next_token();
 
-        let Token::Assign = self.next_token else {
+        if self.next_token != Token::Assign {
             self.peek_error(Token::Assign);
             return None;
         };
 
         self.next_token();
+        self.next_token();
 
-        // todo: handle expressions
-        while self.curr_token != Token::Semicolon {
+        let expr = self.parse_expression(Precedence::Lowest)?;
+
+        if self.next_token == Token::Semicolon {
             self.next_token();
         }
 
         Some(Statement::Let {
             name: Token::Ident(name),
+            value: expr,
         })
     }
 
     fn parse_return_statement(&mut self) -> Option<Statement> {
         self.next_token();
 
-        // todo: handle expressions
-        while self.curr_token != Token::Semicolon {
+        let expr = if self.curr_token == Token::Semicolon {
+            None
+        } else {
+            Some(self.parse_expression(Precedence::Lowest)?)
+        };
+
+        if self.next_token == Token::Semicolon {
             self.next_token();
         }
 
-        Some(Statement::Return)
+        Some(Statement::Return(expr))
+    }
+
+    fn parse_block_statement(&mut self) -> Option<Statement> {
+        self.next_token();
+
+        let mut block = Vec::new();
+
+        while self.curr_token != Token::RBrace && self.curr_token != Token::Eof {
+            let stmt = self.parse_statement();
+            if let Some(stmt) = stmt {
+                block.push(stmt);
+            }
+
+            self.next_token();
+        }
+
+        Some(Statement::Block(block))
     }
 
     fn parse_statement(&mut self) -> Option<Statement> {
@@ -126,6 +157,52 @@ impl<'a> Parser<'a> {
             Token::Return => self.parse_return_statement(),
             _ => self.parse_expression_statement(),
         }
+    }
+
+    fn parse_if_expression(&mut self) -> Option<Expression> {
+        if self.next_token != Token::LParen {
+            self.peek_error(Token::LParen);
+            return None;
+        }
+
+        self.next_token();
+        self.next_token();
+
+        let condition = self.parse_expression(Precedence::Lowest)?;
+
+        if self.next_token != Token::RParen {
+            self.peek_error(Token::RParen);
+            return None;
+        }
+        self.next_token();
+
+        if self.next_token != Token::LBrace {
+            self.peek_error(Token::LBrace);
+            return None;
+        }
+        self.next_token();
+
+        let consequence = self.parse_block_statement()?;
+
+        let alternative = if self.next_token == Token::Else {
+            self.next_token();
+
+            if self.next_token != Token::LBrace {
+                self.peek_error(Token::LBrace);
+                return None;
+            }
+            self.next_token();
+
+            Some(Box::new(self.parse_block_statement()?))
+        } else {
+            None
+        };
+
+        Some(Expression::If {
+            condition: Box::new(condition),
+            consequence: Box::new(consequence),
+            alternative,
+        })
     }
 
     fn parse_prefix(&mut self) -> Option<Expression> {
@@ -152,6 +229,21 @@ impl<'a> Parser<'a> {
                     _ => unreachable!(),
                 }
             }
+
+            Token::LParen => {
+                self.next_token();
+                let expr = self.parse_expression(Precedence::Lowest)?;
+                if self.next_token != Token::RParen {
+                    self.peek_error(Token::RParen);
+                    return None;
+                }
+
+                self.next_token();
+
+                expr
+            }
+
+            Token::If => self.parse_if_expression()?,
 
             token @ (Token::True | Token::False) => Expression::Boolean(token == Token::True),
 
@@ -250,35 +342,64 @@ mod tests {
             panic!();
         }
 
-        let expected_identifiers = ["x", "y", "foobar"];
-        for (stmt, expected) in program.iter().zip(expected_identifiers) {
-            if let Statement::Let { name: ident_token } = stmt {
+        let expected_identifiers = [("x", 5), ("y", 10), ("foobar", 838383)];
+        for (stmt, (expected_ident, expected_val)) in program.iter().zip(expected_identifiers) {
+            if let Statement::Let {
+                name: ident_token,
+                value: val_token,
+            } = stmt
+            {
                 let Token::Ident(name) = ident_token else {
                     panic!("expected identifier token found.");
                 };
 
-                assert_eq!(name, expected);
+                let Expression::Int(val) = *val_token else {
+                    panic!();
+                };
+
+                assert_eq!(name, expected_ident);
+                assert_eq!(val, expected_val);
             }
         }
     }
 
     #[test]
     fn return_statements() {
-        let input = r#"
-            return 5;
-            return 10;
-            return 993322;
-        "#;
-
-        let program = new_program(input).unwrap();
-        if program.len() != 3 {
-            panic!();
+        struct Return<'a> {
+            input: &'a str,
+            return_val: Option<Expression>,
         }
 
-        for stmt in program {
-            let Statement::Return = stmt else {
+        let inputs = [
+            Return {
+                input: "return 5;",
+                return_val: Some(Expression::Int(5)),
+            },
+            Return {
+                input: "return 10;",
+                return_val: Some(Expression::Int(10)),
+            },
+            Return {
+                input: "return 993322;",
+                return_val: Some(Expression::Int(993322)),
+            },
+            Return {
+                input: "return;",
+                return_val: None,
+            },
+        ];
+
+        for input in inputs {
+            let program = new_program(input.input).unwrap();
+            if program.len() != 1 {
+                panic!();
+            }
+
+            let Statement::Return(ref val) = program[0] else {
                 panic!();
             };
+
+            assert_eq!(input.return_val, *val);
         }
     }
 
@@ -483,7 +604,30 @@ mod tests {
             expected: &'a str,
         }
 
-        todo!("found on page 67 and 80 of writing go interpreter book")
+        let tests = [
+            Test {
+                input: "1 + (2 + 3) + 4",
+                expected: "((1 + (2 + 3)) + 4)",
+            },
+            Test {
+                input: "(5 + 5) * 2",
+                expected: "((5 + 5) * 2)",
+            },
+            Test {
+                input: "2 / (5 + 5)",
+                expected: "(2 / (5 + 5))",
+            },
+            Test {
+                input: "-(5 + 5)",
+                expected: "(-(5 + 5))",
+            },
+            Test {
+                input: "!(true == true)",
+                expected: "(!(true == true))",
+            },
+        ];
+
+        todo!();
     }
 
     #[test]
@@ -539,5 +683,113 @@ mod tests {
             assert_eq!(input.right, right);
             assert_eq!(input.op, *op);
         }
+    }
+
+    #[test]
+    fn if_expression() {
+        let input = "if (x < y) { x }";
+
+        let program = new_program(input).unwrap();
+        if program.len() != 1 {
+            panic!();
+        }
+
+        let Statement::ExpressionStmt(Expression::If {
+            ref condition,
+            ref consequence,
+            ref alternative,
+        }) = program[0]
+        else {
+            panic!();
+        };
+
+        let Expression::Infix {
+            left: ref cond_left,
+            op: ref cond_op,
+            right: ref cond_right,
+        } = **condition
+        else {
+            panic!();
+        };
+
+        let Expression::Ident(ref left) = **cond_left else {
+            panic!()
+        };
+        let Expression::Ident(ref right) = **cond_right else {
+            panic!()
+        };
+
+        let Statement::Block(ref consequence) = **consequence else {
+            panic!();
+        };
+
+        let Statement::ExpressionStmt(Expression::Ident(ref consequence)) = consequence[0] else {
+            panic!();
+        };
+
+        assert_eq!(left, "x");
+        assert_eq!(right, "y");
+        assert_eq!(*cond_op, Token::LT);
+        assert_eq!(consequence, "x");
+        assert!(alternative.is_none());
+    }
+
+    #[test]
+    fn if_else_expression() {
+        let input = r#"if (x < y) { x } else { y }"#;
+
+        let program = new_program(input).unwrap();
+        if program.len() != 1 {
+            panic!();
+        }
+
+        let Statement::ExpressionStmt(Expression::If {
+            condition,
+            consequence,
+            alternative,
+        }) = program.get(0).unwrap()
+        else {
+            panic!();
+        };
+
+        let Expression::Infix {
+            left: ref cond_left,
+            op: ref cond_op,
+            right: ref cond_right,
+        } = **condition
+        else {
+            panic!();
+        };
+
+        let Expression::Ident(ref left) = **cond_left else {
+            panic!()
+        };
+        let Expression::Ident(ref right) = **cond_right else {
+            panic!()
+        };
+
+        let Statement::Block(ref consequence) = **consequence else {
+            panic!();
+        };
+
+        let Statement::ExpressionStmt(Expression::Ident(consequence)) = consequence.get(0).unwrap()
+        else {
+            panic!();
+        };
+
+        let alternative = alternative.as_ref().unwrap();
+        let Statement::Block(ref alternative) = **alternative else {
+            panic!();
+        };
+
+        let Statement::ExpressionStmt(Expression::Ident(ref alternative)) = alternative[0] else {
+            panic!();
+        };
+
+        assert_eq!(left, "x");
+        assert_eq!(right, "y");
+        assert_eq!(*cond_op, Token::LT);
+        assert_eq!(consequence, "x");
+        assert_eq!(alternative, "y");
     }
 }
