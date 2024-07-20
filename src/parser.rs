@@ -19,6 +19,16 @@ pub enum Expression {
         consequence: Box<Statement>,
         alternative: Option<Box<Statement>>,
     },
+
+    Function {
+        params: Option<Vec<String>>,
+        body: Box<Statement>,
+    },
+
+    Call {
+        function: Box<Expression>,
+        args: Option<Vec<Expression>>,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -51,6 +61,7 @@ impl From<Token> for Precedence {
             Token::Minus => Self::Sum,
             Token::Slash => Self::Product,
             Token::Asterisk => Self::Product,
+            Token::LParen => Self::Call,
             _ => Self::Lowest,
         }
     }
@@ -205,6 +216,89 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_fn_params(&mut self) -> Option<Vec<String>> {
+        let mut idents = Vec::new();
+
+        if self.next_token == Token::RParen {
+            self.next_token();
+            return None;
+        }
+        self.next_token();
+
+        let Token::Ident(curr_ident) = self.curr_token.clone() else {
+            return None;
+        };
+        idents.push(curr_ident);
+
+        while self.next_token == Token::Comma {
+            self.next_token();
+            self.next_token();
+            let Token::Ident(curr_ident) = self.curr_token.clone() else {
+                return None;
+            };
+            idents.push(curr_ident);
+        }
+
+        if self.next_token != Token::RParen {
+            None
+        } else {
+            self.next_token();
+            Some(idents)
+        }
+    }
+
+    fn parse_fn_literal(&mut self) -> Option<Expression> {
+        if self.next_token != Token::LParen {
+            return None;
+        }
+        self.next_token();
+
+        let params = self.parse_fn_params();
+
+        if self.next_token != Token::LBrace {
+            return None;
+        }
+        self.next_token();
+
+        let body = self.parse_block_statement()?;
+
+        Some(Expression::Function {
+            params,
+            body: Box::new(body),
+        })
+    }
+
+    fn parse_call_args(&mut self) -> Option<Vec<Expression>> {
+        if self.next_token == Token::RParen {
+            self.next_token();
+            return None;
+        }
+        self.next_token();
+
+        let mut args = Vec::new();
+        args.push(self.parse_expression(Precedence::Lowest)?);
+
+        while self.next_token == Token::Comma {
+            self.next_token();
+            self.next_token();
+            args.push(self.parse_expression(Precedence::Lowest)?);
+        }
+
+        if self.next_token != Token::RParen {
+            return None;
+        }
+        self.next_token();
+
+        Some(args)
+    }
+
+    fn parse_call_expression(&mut self, function: Expression) -> Option<Expression> {
+        Some(Expression::Call {
+            function: Box::new(function),
+            args: self.parse_call_args(),
+        })
+    }
+
     fn parse_prefix(&mut self) -> Option<Expression> {
         let expr = match self.curr_token.clone() {
             Token::Ident(ident) => Expression::Ident(ident),
@@ -245,6 +339,8 @@ impl<'a> Parser<'a> {
 
             Token::If => self.parse_if_expression()?,
 
+            Token::Function => self.parse_fn_literal()?,
+
             token @ (Token::True | Token::False) => Expression::Boolean(token == Token::True),
 
             token @ _ => {
@@ -260,13 +356,17 @@ impl<'a> Parser<'a> {
     fn parse_infix(&mut self, left: Expression) -> Option<Expression> {
         let op_token = self.curr_token.clone();
         let precedence = Precedence::from(op_token.clone());
-        self.next_token();
-        let right = self.parse_expression(precedence)?;
 
-        Some(Expression::Infix {
-            left: Box::new(left),
-            op: op_token,
-            right: Box::new(right),
+        Some(if op_token == Token::LParen {
+            self.parse_call_expression(left)?
+        } else {
+            self.next_token();
+            let right = self.parse_expression(precedence)?;
+            Expression::Infix {
+                left: Box::new(left),
+                op: op_token,
+                right: Box::new(right),
+            }
         })
     }
 
@@ -598,39 +698,6 @@ mod tests {
     }
 
     #[test]
-    fn operator_precedence() {
-        struct Test<'a> {
-            input: &'a str,
-            expected: &'a str,
-        }
-
-        let tests = [
-            Test {
-                input: "1 + (2 + 3) + 4",
-                expected: "((1 + (2 + 3)) + 4)",
-            },
-            Test {
-                input: "(5 + 5) * 2",
-                expected: "((5 + 5) * 2)",
-            },
-            Test {
-                input: "2 / (5 + 5)",
-                expected: "(2 / (5 + 5))",
-            },
-            Test {
-                input: "-(5 + 5)",
-                expected: "(-(5 + 5))",
-            },
-            Test {
-                input: "!(true == true)",
-                expected: "(!(true == true))",
-            },
-        ];
-
-        todo!();
-    }
-
-    #[test]
     fn boolean_literal() {
         struct Infix<'a> {
             input: &'a str,
@@ -791,5 +858,102 @@ mod tests {
         assert_eq!(*cond_op, Token::LT);
         assert_eq!(consequence, "x");
         assert_eq!(alternative, "y");
+    }
+
+    #[test]
+    fn function_literal() {
+        // ExpressionStmt(
+        // Function {
+        // params: Some(["x", "y"]),
+        // body: Block([ExpressionStmt(Infix {
+        // left: Ident("x"),
+        // op: Plus,
+        // right: Ident("y")
+        // })])
+        // })
+        let program = new_program("fn(x, y) { x + y }").unwrap();
+
+        if program.len() != 1 {
+            panic!();
+        }
+
+        let Statement::ExpressionStmt(Expression::Function {
+            ref params,
+            ref body,
+        }) = program[0]
+        else {
+            panic!();
+        };
+
+        let params = params.clone().unwrap();
+        let mut params = params.iter();
+        let Statement::Block(ref body) = **body else {
+            panic!();
+        };
+
+        let body = body.get(0).unwrap();
+        println!("body: {:?}", body);
+
+        assert_eq!(params.next().unwrap(), "x");
+        assert_eq!(params.next().unwrap(), "y");
+        assert_eq!(
+            *body,
+            Statement::ExpressionStmt(Expression::Infix {
+                left: Box::new(Expression::Ident("x".into())),
+                op: Token::Plus,
+                right: Box::new(Expression::Ident("y".into()))
+            })
+        )
+    }
+
+    #[test]
+    fn function_call() {
+        let program = new_program("add(1, 2 * 3, 4 + 5);").unwrap();
+
+        if program.len() != 1 {
+            panic!();
+        }
+
+        let Statement::ExpressionStmt(Expression::Call {
+            ref function,
+            ref args,
+        }) = program[0]
+        else {
+            panic!();
+        };
+
+        let Expression::Ident(ref function) = **function else {
+            panic!();
+        };
+
+        let args = args.as_ref().unwrap();
+        let mut args = args.iter();
+
+        assert_eq!(function, "add");
+        assert_eq!(args.next().unwrap(), &Expression::Int(1));
+
+        // 2 * 3
+        let Expression::Infix {
+            left,
+            op: Token::Asterisk,
+            right,
+        } = args.next().unwrap()
+        else {
+            panic!();
+        };
+        assert_eq!(**left, Expression::Int(2));
+        assert_eq!(**right, Expression::Int(3));
+
+        // 4 + 5
+        let Expression::Infix {
+            left,
+            op: Token::Plus,
+            right,
+        } = args.next().unwrap()
+        else {
+            panic!();
+        };
+        assert_eq!(**left, Expression::Int(4));
+        assert_eq!(**right, Expression::Int(5));
     }
 }
