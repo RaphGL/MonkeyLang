@@ -7,6 +7,7 @@ use crate::parser::{Expression, Program, Statement};
 pub enum Object {
     Int(i64),
     Bool(bool),
+    Return(Box<Object>),
     Null,
 }
 
@@ -16,16 +17,19 @@ impl Display for Object {
             Self::Int(int) => write!(f, "{int}"),
             Self::Bool(boolean) => write!(f, "{boolean}"),
             Self::Null => write!(f, "null"),
+            Self::Return(ret) => ret.fmt(f),
         }
     }
 }
 
 pub fn eval(program: &Program) -> Object {
-    let mut program = program.iter();
-    let mut result = eval_statement(program.next().unwrap());
+    let mut result = Object::Null;
 
     for stmt in program {
         result = eval_statement(&stmt);
+        if let Object::Return(obj) = result {
+            return *obj;
+        }
     }
 
     result
@@ -34,8 +38,29 @@ pub fn eval(program: &Program) -> Object {
 pub fn eval_statement(stmt: &Statement) -> Object {
     match stmt {
         Statement::Let { name, value } => todo!(),
-        Statement::Return(return_val) => todo!(),
-        Statement::Block(block) => eval(block),
+
+        Statement::Return(return_val) => {
+            if let Some(return_val) = return_val {
+                let return_val = eval_expression(return_val);
+                Object::Return(Box::new(return_val))
+            } else {
+                Object::Null
+            }
+        }
+
+        Statement::Block(block) => {
+            let mut result = Object::Null;
+
+            for stmt in block {
+                result = eval_statement(&stmt);
+                if let Object::Return(_) = result {
+                    return result;
+                }
+            }
+
+            result
+        }
+
         Statement::ExpressionStmt(expr) => eval_expression(expr),
     }
 }
@@ -143,7 +168,7 @@ mod tests {
     use crate::lexer::Lexer;
     use crate::parser::{Parser, Program};
 
-    use super::{eval_statement, Object};
+    use super::{eval, Object};
 
     fn check_parser_errors(parser: &Parser) {
         for error in &parser.errors {
@@ -170,8 +195,7 @@ mod tests {
             panic!();
         }
 
-        let program = program.first().unwrap();
-        assert_eq!(eval_statement(program), Object::Int(532));
+        assert_eq!(eval(&program), Object::Int(532));
     }
 
     #[test]
@@ -181,15 +205,13 @@ mod tests {
             panic!();
         }
 
-        let program = program.first().unwrap();
-        assert_eq!(eval_statement(program), Object::Bool(true));
+        assert_eq!(eval(&program), Object::Bool(true));
     }
 
     #[test]
     fn null_literal() {
         let program = new_program("null").unwrap();
-        let program = program.first().unwrap();
-        assert_eq!(eval_statement(program), Object::Null);
+        assert_eq!(eval(&program), Object::Null);
     }
 
     #[test]
@@ -202,8 +224,7 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            let program = program.first().unwrap();
-            assert_eq!(eval_statement(program), expected);
+            assert_eq!(eval(&program), expected);
         }
     }
 
@@ -213,8 +234,7 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            let program = program.first().unwrap();
-            assert_eq!(eval_statement(program), expected);
+            assert_eq!(eval(&program), expected);
         }
     }
 
@@ -240,8 +260,7 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            let program = program.first().unwrap();
-            assert_eq!(eval_statement(program), expected);
+            assert_eq!(eval(&program), expected);
         }
     }
 
@@ -271,8 +290,7 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            let program = program.first().unwrap();
-            assert_eq!(eval_statement(program), expected);
+            assert_eq!(eval(&program), expected);
         }
     }
 
@@ -290,8 +308,33 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            let program = program.first().unwrap();
-            assert_eq!(eval_statement(program), expected);
+            assert_eq!(eval(&program), expected);
+        }
+    }
+
+    #[test]
+    fn return_statements() {
+        let tests = [
+            ("return 10;", Object::Int(10)),
+            ("return 10; 9;", Object::Int(10)),
+            ("return 2 * 5; 9;", Object::Int(10)),
+            ("9; return 2 * 5; 9;", Object::Int(10)),
+            (
+                "if (10 > 1) {
+                if (10 > 1) {
+                    return 10;
+                }
+                 return 1;
+            }",
+                Object::Int(10),
+            ),
+        ];
+
+        for (input, expected) in tests {
+            let program = new_program(input).unwrap();
+            let ret = eval(&program);
+
+            assert_eq!(ret, expected);
         }
     }
 }
