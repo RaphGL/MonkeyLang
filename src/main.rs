@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+mod interpreter;
 mod lexer;
 mod parser;
 
@@ -22,7 +23,7 @@ fn main() {
         let program = parser.parse();
 
         if let Some(program) = program {
-            println!("{:?}", program);
+            println!("{}", interpreter::eval(&program));
         } else {
             for err in parser.errors {
                 println!("{}", err);

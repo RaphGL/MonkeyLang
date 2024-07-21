@@ -67,7 +67,7 @@ impl From<Token> for Precedence {
     }
 }
 
-type Program = Vec<Statement>;
+pub type Program = Vec<Statement>;
 
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
