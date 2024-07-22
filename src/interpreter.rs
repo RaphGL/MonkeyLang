@@ -1,13 +1,22 @@
 use std::fmt::Display;
 
+use crate::env::Environment;
 use crate::lexer::Token;
 use crate::parser::{Expression, Program, Statement};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Object {
     Int(i64),
     Bool(bool),
     Return(Box<Object>),
+    Error(String),
+
+    FunctionLiteral {
+        params: Option<Vec<String>>,
+        body: Statement,
+        env: Environment,
+    },
+
     Null,
 }
 
@@ -18,30 +27,61 @@ impl Display for Object {
             Self::Bool(boolean) => write!(f, "{boolean}"),
             Self::Null => write!(f, "null"),
             Self::Return(ret) => ret.fmt(f),
+            Self::Error(err) => write!(f, "error: {err}"),
+
+            Self::FunctionLiteral { params, .. } => {
+                let mut params_str = String::new();
+                if let Some(params) = params {
+                    for (i, param) in params.iter().enumerate() {
+                        params_str += param;
+                        if i < params.len() - 1 {
+                            params_str += ", ";
+                        }
+                    }
+                }
+
+                // todo: add body rendering
+                write!(f, "fn({params_str}) {{ <body> }}")
+            }
         }
     }
 }
 
-pub fn eval(program: &Program) -> Object {
+pub fn eval(program: &Program, env: &mut Environment) -> Object {
     let mut result = Object::Null;
 
     for stmt in program {
-        result = eval_statement(&stmt);
+        result = eval_statement(&stmt, env);
         if let Object::Return(obj) = result {
             return *obj;
+        }
+
+        if let Object::Error(_) = result {
+            return result;
         }
     }
 
     result
 }
 
-pub fn eval_statement(stmt: &Statement) -> Object {
+pub fn eval_statement(stmt: &Statement, env: &mut Environment) -> Object {
     match stmt {
-        Statement::Let { name, value } => todo!(),
+        Statement::Let { name, value } => {
+            let value = eval_expression(value, env);
+            if let Object::Error(_) = value {
+                return value;
+            }
+
+            let Token::Ident(name) = name else {
+                return Object::Error(format!("invalid syntax: {name} used instead of identifier"));
+            };
+
+            env.set(name.clone(), value)
+        }
 
         Statement::Return(return_val) => {
             if let Some(return_val) = return_val {
-                let return_val = eval_expression(return_val);
+                let return_val = eval_expression(return_val, env);
                 Object::Return(Box::new(return_val))
             } else {
                 Object::Null
@@ -52,16 +92,17 @@ pub fn eval_statement(stmt: &Statement) -> Object {
             let mut result = Object::Null;
 
             for stmt in block {
-                result = eval_statement(&stmt);
-                if let Object::Return(_) = result {
-                    return result;
+                result = eval_statement(&stmt, env);
+                match result {
+                    Object::Return(_) | Object::Error(_) => return result,
+                    _ => (),
                 }
             }
 
             result
         }
 
-        Statement::ExpressionStmt(expr) => eval_expression(expr),
+        Statement::ExpressionStmt(expr) => eval_expression(expr, env),
     }
 }
 
@@ -72,29 +113,31 @@ fn is_truthy(obj: Object) -> bool {
     }
 }
 
-fn eval_expression(expr: &Expression) -> Object {
+fn eval_expression(expr: &Expression, env: &mut Environment) -> Object {
     match expr {
         Expression::Int(int) => Object::Int(*int),
 
         Expression::Ident(ident) => {
             if ident == "null" {
-                Object::Null
-            } else {
-                todo!()
+                return Object::Null;
+            }
+            match env.get(ident) {
+                Some(value) => value.clone(),
+                None => Object::Error(format!("identifier not found: {ident}")),
             }
         }
 
         Expression::PrefixNeg(right) => {
-            let result = eval_expression(right);
+            let result = eval_expression(right, env);
             if let Object::Int(int) = result {
                 return Object::Int(-int);
             }
 
-            Object::Null
+            Object::Error(format!("type error: expected int found {result}"))
         }
 
         Expression::PrefixNot(right) => {
-            let result = eval_expression(right);
+            let result = eval_expression(right, env);
             match result {
                 Object::Bool(bool) => Object::Bool(!bool),
                 Object::Null => Object::Bool(true),
@@ -105,25 +148,31 @@ fn eval_expression(expr: &Expression) -> Object {
         Expression::Boolean(boolean) => Object::Bool(*boolean),
 
         Expression::Infix { left, op, right } => {
-            let left = eval_expression(left);
-            let right = eval_expression(right);
+            let left = eval_expression(left, env);
+            let right = eval_expression(right, env);
 
             match left {
                 Object::Bool(left) => {
                     let Object::Bool(right) = right else {
-                        return Object::Null;
+                        return Object::Error(format!(
+                            "type mismatch: expected bool on right-hand side found {right}"
+                        ));
                     };
 
                     match *op {
                         Token::Eq => Object::Bool(left == right),
                         Token::NotEq => Object::Bool(left != right),
-                        _ => Object::Null,
+                        _ => Object::Error(format!(
+                            "unknown operator: operator `{op}` does not work on bools"
+                        )),
                     }
                 }
 
                 Object::Int(left) => {
                     let Object::Int(right) = right else {
-                        return Object::Null;
+                        return Object::Error(format!(
+                            "type mismatch: expected int on right-hand side found {right}"
+                        ));
                     };
 
                     match *op {
@@ -135,11 +184,13 @@ fn eval_expression(expr: &Expression) -> Object {
                         Token::LT => Object::Bool(left < right),
                         Token::Eq => Object::Bool(left == right),
                         Token::NotEq => Object::Bool(left != right),
-                        _ => Object::Null,
+                        _ => Object::Error(format!("unknown operator: {op}")),
                     }
                 }
 
-                _ => Object::Null,
+                _ => Object::Error(format!(
+                    "type error: infix operator `{op}` does not work on {left}"
+                )),
             }
         }
 
@@ -148,11 +199,11 @@ fn eval_expression(expr: &Expression) -> Object {
             consequence,
             alternative,
         } => {
-            let condition = eval_expression(condition);
+            let condition = eval_expression(condition, env);
             if is_truthy(condition) {
-                eval_statement(consequence)
+                eval_statement(consequence, env)
             } else if let Some(alternative) = alternative {
-                eval_statement(alternative)
+                eval_statement(alternative, env)
             } else {
                 Object::Null
             }
@@ -165,8 +216,9 @@ fn eval_expression(expr: &Expression) -> Object {
 
 #[cfg(test)]
 mod tests {
+    use crate::env::Environment;
     use crate::lexer::Lexer;
-    use crate::parser::{Parser, Program};
+    use crate::parser::{Expression, Parser, Program, Statement};
 
     use super::{eval, Object};
 
@@ -195,7 +247,8 @@ mod tests {
             panic!();
         }
 
-        assert_eq!(eval(&program), Object::Int(532));
+        let mut env = Environment::new();
+        assert_eq!(eval(&program, &mut env), Object::Int(532));
     }
 
     #[test]
@@ -205,13 +258,15 @@ mod tests {
             panic!();
         }
 
-        assert_eq!(eval(&program), Object::Bool(true));
+        let mut env = Environment::new();
+        assert_eq!(eval(&program, &mut env), Object::Bool(true));
     }
 
     #[test]
     fn null_literal() {
         let program = new_program("null").unwrap();
-        assert_eq!(eval(&program), Object::Null);
+        let mut env = Environment::new();
+        assert_eq!(eval(&program, &mut env), Object::Null);
     }
 
     #[test]
@@ -224,7 +279,8 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            assert_eq!(eval(&program), expected);
+            let mut env = Environment::new();
+            assert_eq!(eval(&program, &mut env), expected);
         }
     }
 
@@ -234,7 +290,8 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            assert_eq!(eval(&program), expected);
+            let mut env = Environment::new();
+            assert_eq!(eval(&program, &mut env), expected);
         }
     }
 
@@ -260,7 +317,8 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            assert_eq!(eval(&program), expected);
+            let mut env = Environment::new();
+            assert_eq!(eval(&program, &mut env), expected);
         }
     }
 
@@ -290,7 +348,8 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            assert_eq!(eval(&program), expected);
+            let mut env = Environment::new();
+            assert_eq!(eval(&program, &mut env), expected);
         }
     }
 
@@ -308,7 +367,8 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            assert_eq!(eval(&program), expected);
+            let mut env = Environment::new();
+            assert_eq!(eval(&program, &mut env), expected);
         }
     }
 
@@ -332,9 +392,85 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            let ret = eval(&program);
+            let mut env = Environment::new();
+            let ret = eval(&program, &mut env);
 
             assert_eq!(ret, expected);
         }
+    }
+
+    #[test]
+    fn let_statements() {
+        let tests = [
+            ("let a = 5; a;", Object::Int(5)),
+            ("let a = 5 * 5; a;", Object::Int(25)),
+            ("let a = 5; let b = a; b;", Object::Int(5)),
+            (
+                "let a = 5; let b = a; let c = a + b + 5; c;",
+                Object::Int(15),
+            ),
+        ];
+
+        for (input, expected) in tests {
+            let program = new_program(input).unwrap();
+            let mut env = Environment::new();
+            let ret = eval(&program, &mut env);
+
+            assert_eq!(ret, expected);
+        }
+    }
+
+    #[test]
+    fn error_handling() {
+        let tests = [
+            "5 + true;",
+            "5 + true; 5;",
+            "-true",
+            "true + false;",
+            "5; true + false; 5",
+            "if (10 > 1) { true + false; }",
+            "5 + true;",
+            "5 + true; 5;",
+            "-true",
+            "true + false;",
+            "5; true + false; 5",
+            "if (10 > 1) { true + false; }",
+            "foobar",
+        ];
+
+        for input in tests {
+            let program = new_program(input).unwrap();
+            let mut env = Environment::new();
+            let ret = eval(&program, &mut env);
+
+            let Object::Error(_) = ret else {
+                panic!();
+            };
+        }
+    }
+
+    #[test]
+    fn function_object() {
+        let input = "fn(x) { x + 2; };";
+
+        let program = new_program(input).unwrap();
+        let Object::FunctionLiteral { params, body, .. } = eval(&program, &mut Environment::new())
+        else {
+            panic!();
+        };
+
+        let Some(params) = params else {
+            panic!();
+        };
+
+        assert_eq!(params[0], "x");
+        assert_eq!(
+            body,
+            Statement::ExpressionStmt(Expression::Infix {
+                left: Box::new(Expression::Ident("x".into())),
+                op: crate::lexer::Token::Plus,
+                right: Box::new(Expression::Int(2))
+            })
+        );
     }
 }
