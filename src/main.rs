@@ -5,6 +5,7 @@ mod parser;
 
 use env::Environment;
 use std::io::{self, Write};
+use std::rc::Rc;
 
 use crate::lexer::Lexer;
 use crate::parser::Parser;
@@ -13,7 +14,7 @@ fn main() {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut input = String::new();
-    let mut env = Environment::new();
+    let env = Environment::new();
 
     loop {
         print!(">> ");
@@ -27,7 +28,7 @@ fn main() {
         let program = parser.parse();
 
         if let Some(program) = program {
-            println!("{}", interpreter::eval(&program, &mut env));
+            println!("{}", interpreter::eval(&program, Rc::clone(&env)));
         } else {
             for err in parser.errors {
                 println!("{}", err);

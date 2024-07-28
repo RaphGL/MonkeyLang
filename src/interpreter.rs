@@ -1,6 +1,7 @@
 use std::fmt::Display;
+use std::rc::Rc;
 
-use crate::env::Environment;
+use crate::env::{EnvCell, Environment};
 use crate::lexer::Token;
 use crate::parser::{Expression, Program, Statement};
 
@@ -14,9 +15,8 @@ pub enum Object {
     FunctionLiteral {
         params: Option<Vec<String>>,
         body: Statement,
-        env: Environment,
+        env: EnvCell,
     },
-
     Null,
 }
 
@@ -47,11 +47,11 @@ impl Display for Object {
     }
 }
 
-pub fn eval(program: &Program, env: &mut Environment) -> Object {
+pub fn eval(program: &Program, env: EnvCell) -> Object {
     let mut result = Object::Null;
 
     for stmt in program {
-        result = eval_statement(&stmt, env);
+        result = eval_statement(&stmt, Rc::clone(&env));
         if let Object::Return(obj) = result {
             return *obj;
         }
@@ -64,10 +64,10 @@ pub fn eval(program: &Program, env: &mut Environment) -> Object {
     result
 }
 
-pub fn eval_statement(stmt: &Statement, env: &mut Environment) -> Object {
+pub fn eval_statement(stmt: &Statement, env: EnvCell) -> Object {
     match stmt {
         Statement::Let { name, value } => {
-            let value = eval_expression(value, env);
+            let value = eval_expression(value, Rc::clone(&env));
             if let Object::Error(_) = value {
                 return value;
             }
@@ -76,7 +76,7 @@ pub fn eval_statement(stmt: &Statement, env: &mut Environment) -> Object {
                 return Object::Error(format!("invalid syntax: {name} used instead of identifier"));
             };
 
-            env.set(name.clone(), value)
+            env.borrow_mut().set(name.clone(), value)
         }
 
         Statement::Return(return_val) => {
@@ -92,7 +92,7 @@ pub fn eval_statement(stmt: &Statement, env: &mut Environment) -> Object {
             let mut result = Object::Null;
 
             for stmt in block {
-                result = eval_statement(&stmt, env);
+                result = eval_statement(&stmt, Rc::clone(&env));
                 match result {
                     Object::Return(_) | Object::Error(_) => return result,
                     _ => (),
@@ -113,7 +113,34 @@ fn is_truthy(obj: Object) -> bool {
     }
 }
 
-fn eval_expression(expr: &Expression, env: &mut Environment) -> Object {
+fn apply_function(func: Object, args: Option<Vec<Object>>) -> Object {
+    let Object::FunctionLiteral { params, body, env } = func else {
+        return Object::Error("not a function".into());
+    };
+
+    let local_env = {
+        let env = Environment::new_enclosed_with(Rc::clone(&env));
+
+        if let Some(args) = args {
+            let params = params.expect("params should be the same size as args");
+            for (i, param) in params.iter().enumerate() {
+                env.borrow_mut().set(param.clone(), args[i].clone());
+            }
+        }
+
+        env
+    };
+
+    let result = eval_statement(&body, local_env);
+
+    if let Object::Return(result) = result {
+        *result
+    } else {
+        result
+    }
+}
+
+fn eval_expression(expr: &Expression, env: EnvCell) -> Object {
     match expr {
         Expression::Int(int) => Object::Int(*int),
 
@@ -121,7 +148,7 @@ fn eval_expression(expr: &Expression, env: &mut Environment) -> Object {
             if ident == "null" {
                 return Object::Null;
             }
-            match env.get(ident) {
+            match env.borrow().get(ident) {
                 Some(value) => value.clone(),
                 None => Object::Error(format!("identifier not found: {ident}")),
             }
@@ -148,8 +175,8 @@ fn eval_expression(expr: &Expression, env: &mut Environment) -> Object {
         Expression::Boolean(boolean) => Object::Bool(*boolean),
 
         Expression::Infix { left, op, right } => {
-            let left = eval_expression(left, env);
-            let right = eval_expression(right, env);
+            let left = eval_expression(left, Rc::clone(&env));
+            let right = eval_expression(right, Rc::clone(&env));
 
             match left {
                 Object::Bool(left) => {
@@ -199,18 +226,41 @@ fn eval_expression(expr: &Expression, env: &mut Environment) -> Object {
             consequence,
             alternative,
         } => {
-            let condition = eval_expression(condition, env);
+            let condition = eval_expression(condition, Rc::clone(&env));
             if is_truthy(condition) {
-                eval_statement(consequence, env)
+                eval_statement(consequence, Rc::clone(&env))
             } else if let Some(alternative) = alternative {
-                eval_statement(alternative, env)
+                eval_statement(alternative, Rc::clone(&env))
             } else {
                 Object::Null
             }
         }
 
-        Expression::Function { params, body } => todo!(),
-        Expression::Call { function, args } => todo!(),
+        Expression::Function { params, body } => Object::FunctionLiteral {
+            params: params.clone(),
+            body: *body.clone(),
+            env: Rc::clone(&env),
+        },
+
+        Expression::Call { function, args } => {
+            let func = eval_expression(function, Rc::clone(&env));
+            if let Object::Error(_) = func {
+                return func;
+            }
+
+            let args = if let Some(args) = args {
+                let mut eval_args = Vec::new();
+                for arg in args {
+                    eval_args.push(eval_expression(arg, Rc::clone(&env)));
+                }
+
+                Some(eval_args)
+            } else {
+                None
+            };
+
+            return apply_function(func, args);
+        }
     }
 }
 
@@ -247,8 +297,8 @@ mod tests {
             panic!();
         }
 
-        let mut env = Environment::new();
-        assert_eq!(eval(&program, &mut env), Object::Int(532));
+        let env = Environment::new();
+        assert_eq!(eval(&program, env), Object::Int(532));
     }
 
     #[test]
@@ -258,15 +308,15 @@ mod tests {
             panic!();
         }
 
-        let mut env = Environment::new();
-        assert_eq!(eval(&program, &mut env), Object::Bool(true));
+        let env = Environment::new();
+        assert_eq!(eval(&program, env), Object::Bool(true));
     }
 
     #[test]
     fn null_literal() {
         let program = new_program("null").unwrap();
-        let mut env = Environment::new();
-        assert_eq!(eval(&program, &mut env), Object::Null);
+        let env = Environment::new();
+        assert_eq!(eval(&program, env), Object::Null);
     }
 
     #[test]
@@ -279,8 +329,8 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            let mut env = Environment::new();
-            assert_eq!(eval(&program, &mut env), expected);
+            let env = Environment::new();
+            assert_eq!(eval(&program, env), expected);
         }
     }
 
@@ -290,8 +340,8 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            let mut env = Environment::new();
-            assert_eq!(eval(&program, &mut env), expected);
+            let env = Environment::new();
+            assert_eq!(eval(&program, env), expected);
         }
     }
 
@@ -317,8 +367,8 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            let mut env = Environment::new();
-            assert_eq!(eval(&program, &mut env), expected);
+            let env = Environment::new();
+            assert_eq!(eval(&program, env), expected);
         }
     }
 
@@ -348,8 +398,8 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            let mut env = Environment::new();
-            assert_eq!(eval(&program, &mut env), expected);
+            let env = Environment::new();
+            assert_eq!(eval(&program, env), expected);
         }
     }
 
@@ -367,8 +417,8 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            let mut env = Environment::new();
-            assert_eq!(eval(&program, &mut env), expected);
+            let env = Environment::new();
+            assert_eq!(eval(&program, env), expected);
         }
     }
 
@@ -392,8 +442,8 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            let mut env = Environment::new();
-            let ret = eval(&program, &mut env);
+            let env = Environment::new();
+            let ret = eval(&program, env);
 
             assert_eq!(ret, expected);
         }
@@ -413,8 +463,8 @@ mod tests {
 
         for (input, expected) in tests {
             let program = new_program(input).unwrap();
-            let mut env = Environment::new();
-            let ret = eval(&program, &mut env);
+            let env = Environment::new();
+            let ret = eval(&program, env);
 
             assert_eq!(ret, expected);
         }
@@ -440,8 +490,8 @@ mod tests {
 
         for input in tests {
             let program = new_program(input).unwrap();
-            let mut env = Environment::new();
-            let ret = eval(&program, &mut env);
+            let env = Environment::new();
+            let ret = eval(&program, env);
 
             let Object::Error(_) = ret else {
                 panic!();
@@ -454,7 +504,7 @@ mod tests {
         let input = "fn(x) { x + 2; };";
 
         let program = new_program(input).unwrap();
-        let Object::FunctionLiteral { params, body, .. } = eval(&program, &mut Environment::new())
+        let Object::FunctionLiteral { params, body, .. } = eval(&program, Environment::new())
         else {
             panic!();
         };
@@ -463,14 +513,60 @@ mod tests {
             panic!();
         };
 
+        let Statement::Block(body) = body else {
+            panic!();
+        };
+
         assert_eq!(params[0], "x");
         assert_eq!(
-            body,
+            body[0],
             Statement::ExpressionStmt(Expression::Infix {
                 left: Box::new(Expression::Ident("x".into())),
                 op: crate::lexer::Token::Plus,
                 right: Box::new(Expression::Int(2))
             })
         );
+    }
+
+    #[test]
+    fn function_application() {
+        let tests = [
+            ("let identity = fn(x) { x; }; identity(5);", Object::Int(5)),
+            (
+                "let identity = fn(x) { return x; }; identity(5);",
+                Object::Int(5),
+            ),
+            ("let double = fn(x) { x * 2; }; double(5);", Object::Int(10)),
+            ("let add = fn(x, y) { x + y; }; add(5, 5);", Object::Int(10)),
+            (
+                "let add = fn(x, y) { x + y; }; add(5 + 5, add(5, 5));",
+                Object::Int(20),
+            ),
+            ("fn(x) { x; }(5)", Object::Int(5)),
+        ];
+
+        for (input, expected) in tests {
+            let program = new_program(input).unwrap();
+            let env = Environment::new();
+            let ret = eval(&program, env);
+
+            assert_eq!(ret, expected);
+        }
+    }
+
+    #[test]
+    fn closures() {
+        let input = "
+            let newAdder = fn(x) {
+                fn(y) { x + y };
+            };
+
+            let addTwo = newAdder(2);
+            addTwo(2);
+        ";
+
+        let program = new_program(input).unwrap();
+        let env = Environment::new();
+        assert_eq!(eval(&program, env), Object::Int(4));
     }
 }
