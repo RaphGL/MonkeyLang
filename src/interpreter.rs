@@ -1,16 +1,22 @@
 use std::fmt::Display;
 use std::rc::Rc;
+use std::sync::LazyLock;
 
+use crate::builtins::{BuiltinFn, Builtins};
 use crate::env::{EnvCell, Environment};
 use crate::lexer::Token;
 use crate::parser::{Expression, Program, Statement};
+
+static BUILTINS: LazyLock<Builtins> = LazyLock::new(|| Builtins::new());
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Object {
     Int(i64),
     Bool(bool),
+    Str(String),
     Return(Box<Object>),
     Error(String),
+    Builtin(String, BuiltinFn),
 
     FunctionLiteral {
         params: Option<Vec<String>>,
@@ -25,7 +31,9 @@ impl Display for Object {
         match self {
             Self::Int(int) => write!(f, "{int}"),
             Self::Bool(boolean) => write!(f, "{boolean}"),
+            Self::Str(string) => write!(f, "\"{string}\""),
             Self::Null => write!(f, "null"),
+            Self::Builtin(fn_name, _) => write!(f, "builtin: {fn_name}"),
             Self::Return(ret) => ret.fmt(f),
             Self::Error(err) => write!(f, "error: {err}"),
 
@@ -115,6 +123,14 @@ fn is_truthy(obj: Object) -> bool {
 
 fn apply_function(func: Object, args: Option<Vec<Object>>) -> Object {
     let Object::FunctionLiteral { params, body, env } = func else {
+        if let Object::Builtin(_, builtin) = func {
+            return if let Some(args) = args {
+                builtin(&args)
+            } else {
+                builtin(&[])
+            };
+        }
+
         return Object::Error("not a function".into());
     };
 
@@ -144,14 +160,22 @@ fn eval_expression(expr: &Expression, env: EnvCell) -> Object {
     match expr {
         Expression::Int(int) => Object::Int(*int),
 
+        Expression::Str(string) => Object::Str(string.clone()),
+
         Expression::Ident(ident) => {
             if ident == "null" {
                 return Object::Null;
             }
-            match env.borrow().get(ident) {
-                Some(value) => value.clone(),
-                None => Object::Error(format!("identifier not found: {ident}")),
+
+            if let Some(value) = env.borrow().get(ident) {
+                return value.clone();
             }
+
+            if let Some(func) = BUILTINS.get(ident) {
+                return Object::Builtin(ident.clone(), func);
+            };
+
+            Object::Error(format!("identifier not found: {ident}"))
         }
 
         Expression::PrefixNeg(right) => {
@@ -213,6 +237,19 @@ fn eval_expression(expr: &Expression, env: EnvCell) -> Object {
                         Token::NotEq => Object::Bool(left != right),
                         _ => Object::Error(format!("unknown operator: {op}")),
                     }
+                }
+
+                Object::Str(left) => {
+                    if *op != Token::Plus {
+                        return Object::Error(format!("invalid string operator {}", *op));
+                    }
+                    let Object::Str(right) = right else {
+                        return Object::Error(format!(
+                            "type mismatch: expected string on right-hand side found {right}"
+                        ));
+                    };
+
+                    Object::Str(left + &right)
                 }
 
                 _ => Object::Error(format!(
@@ -486,6 +523,7 @@ mod tests {
             "5; true + false; 5",
             "if (10 > 1) { true + false; }",
             "foobar",
+            "\"Hello\" - \"World!\"",
         ];
 
         for input in tests {
@@ -529,6 +567,12 @@ mod tests {
     }
 
     #[test]
+    fn string_object() {
+        let program = new_program("\"hello world\"").unwrap();
+        assert!(matches!(eval(&program, Environment::new()), Object::Str(_)));
+    }
+
+    #[test]
     fn function_application() {
         let tests = [
             ("let identity = fn(x) { x; }; identity(5);", Object::Int(5)),
@@ -568,5 +612,39 @@ mod tests {
         let program = new_program(input).unwrap();
         let env = Environment::new();
         assert_eq!(eval(&program, env), Object::Int(4));
+    }
+
+    #[test]
+    fn string_concatenation() {
+        let input = "
+            \"Hello\" + \" \" + \"World!\"
+        ";
+
+        let program = new_program(input).unwrap();
+        let env = Environment::new();
+        assert_eq!(eval(&program, env), Object::Str("Hello World!".into()));
+    }
+
+    #[test]
+    fn builtin_functions() {
+        let tests = [
+            ("len(\"\")", Object::Int(0)),
+            ("len(\"four\")", Object::Int(4)),
+            ("len(\"hello world\")", Object::Int(11)),
+            ("len(1)", Object::Error("".into())),
+            ("len(\"one\", \"two\")", Object::Error("".into())),
+        ];
+
+        for (input, expected) in tests {
+            let program = new_program(input).unwrap();
+            let env = Environment::new();
+            let ret = eval(&program, env);
+
+            if matches!(expected, Object::Error(_)) {
+                assert!(matches!(ret, Object::Error(_)));
+            } else {
+                assert!(ret == expected);
+            }
+        }
     }
 }

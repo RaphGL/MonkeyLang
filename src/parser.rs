@@ -4,6 +4,7 @@ use crate::lexer::{Lexer, Token};
 pub enum Expression {
     Int(i64),
     Ident(String),
+    Str(String),
     PrefixNeg(Box<Expression>),
     PrefixNot(Box<Expression>),
     Boolean(bool),
@@ -302,6 +303,8 @@ impl<'a> Parser<'a> {
     fn parse_prefix(&mut self) -> Option<Expression> {
         let expr = match self.curr_token.clone() {
             Token::Ident(ident) => Expression::Ident(ident),
+            Token::Str(str) => Expression::Str(str),
+
             Token::Int(int) => {
                 let Ok(int) = int.parse::<i64>() else {
                     return None;
@@ -955,5 +958,15 @@ mod tests {
         };
         assert_eq!(**left, Expression::Int(4));
         assert_eq!(**right, Expression::Int(5));
+    }
+
+    #[test]
+    fn string_literal() {
+        let program = new_program("\"hello world\"").unwrap();
+        let Statement::ExpressionStmt(Expression::Str(str_result)) = program.get(0).unwrap() else {
+            panic!();
+        };
+
+        assert_eq!(str_result, "hello world");
     }
 }

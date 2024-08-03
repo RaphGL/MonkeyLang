@@ -10,6 +10,7 @@ pub enum Token {
     // identifiers + literals
     Ident(String),
     Int(String),
+    Str(String),
 
     // operators
     Assign,   // =
@@ -45,6 +46,9 @@ pub enum Token {
 
 impl Display for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // necessary to satisfy lifetime for Token::Str
+        let tmp_str;
+
         write!(
             f,
             "{}",
@@ -55,6 +59,10 @@ impl Display for Token {
                 // identifiers + literals
                 Token::Ident(ident) => ident.as_str(),
                 Token::Int(int) => int.as_str(),
+                Token::Str(string) => {
+                    tmp_str = format!("\"{string}\"");
+                    &tmp_str
+                }
 
                 // operators
                 Token::Assign => "=",
@@ -155,6 +163,18 @@ impl<'a> Lexer<'a> {
                 None => Token::Bang,
             },
 
+            '"' => {
+                let mut new_str = String::new();
+                while let Some(ch) = self.chars.next() {
+                    if ch == '"' {
+                        break;
+                    }
+                    new_str.push(ch);
+                }
+
+                Token::Str(new_str)
+            }
+
             '*' => Token::Asterisk,
             '/' => Token::Slash,
             '<' => Token::LT,
@@ -251,6 +271,8 @@ mod tests {
 
             10 == 10;
             10 != 9;
+            "foobar"
+            "foo bar"
         "#;
 
         let expected_tokens = [
@@ -329,6 +351,8 @@ mod tests {
             Token::NotEq,
             Token::Int("9".into()),
             Token::Semicolon,
+            Token::Str("foobar".into()),
+            Token::Str("foo bar".into()),
             Token::Eof,
         ];
 
