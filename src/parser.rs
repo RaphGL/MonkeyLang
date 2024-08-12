@@ -9,6 +9,12 @@ pub enum Expression {
     PrefixNot(Box<Expression>),
     Boolean(bool),
 
+    Array(Vec<Box<Expression>>),
+    Index {
+        left: Box<Expression>,
+        index: Box<Expression>,
+    },
+
     Infix {
         left: Box<Expression>,
         op: Token,
@@ -49,6 +55,7 @@ enum Precedence {
     Product,     // *
     Prefix,      // -X or !X
     Call,        // myFunction(X)
+    Index,
 }
 
 impl From<Token> for Precedence {
@@ -63,6 +70,7 @@ impl From<Token> for Precedence {
             Token::Slash => Self::Product,
             Token::Asterisk => Self::Product,
             Token::LParen => Self::Call,
+            Token::LBracket => Self::Index,
             _ => Self::Lowest,
         }
     }
@@ -269,8 +277,8 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_call_args(&mut self) -> Option<Vec<Expression>> {
-        if self.next_token == Token::RParen {
+    fn parse_expression_list(&mut self, end: Token) -> Option<Vec<Expression>> {
+        if self.next_token == end {
             self.next_token();
             return None;
         }
@@ -285,7 +293,7 @@ impl<'a> Parser<'a> {
             args.push(self.parse_expression(Precedence::Lowest)?);
         }
 
-        if self.next_token != Token::RParen {
+        if self.next_token != end {
             return None;
         }
         self.next_token();
@@ -296,7 +304,7 @@ impl<'a> Parser<'a> {
     fn parse_call_expression(&mut self, function: Expression) -> Option<Expression> {
         Some(Expression::Call {
             function: Box::new(function),
-            args: self.parse_call_args(),
+            args: self.parse_expression_list(Token::RParen),
         })
     }
 
@@ -340,6 +348,16 @@ impl<'a> Parser<'a> {
                 expr
             }
 
+            Token::LBracket => {
+                let array = self.parse_expression_list(Token::RBracket);
+                if let Some(array) = array {
+                    let array = array.into_iter().map(|i| Box::new(i)).collect();
+                    Expression::Array(array)
+                } else {
+                    Expression::Array(Vec::new())
+                }
+            }
+
             Token::If => self.parse_if_expression()?,
 
             Token::Function => self.parse_fn_literal()?,
@@ -360,17 +378,36 @@ impl<'a> Parser<'a> {
         let op_token = self.curr_token.clone();
         let precedence = Precedence::from(op_token.clone());
 
-        Some(if op_token == Token::LParen {
-            self.parse_call_expression(left)?
-        } else {
-            self.next_token();
-            let right = self.parse_expression(precedence)?;
-            Expression::Infix {
-                left: Box::new(left),
-                op: op_token,
-                right: Box::new(right),
+        let expr = match op_token {
+            Token::LParen => self.parse_call_expression(left)?,
+
+            Token::LBracket => {
+                self.next_token();
+                let expr = Expression::Index {
+                    left: Box::new(left),
+                    index: Box::new(self.parse_expression(Precedence::Lowest)?),
+                };
+
+                if self.next_token != Token::RBracket {
+                    return None;
+                }
+                self.next_token();
+
+                expr
             }
-        })
+
+            _ => {
+                self.next_token();
+                let right = self.parse_expression(precedence)?;
+                Expression::Infix {
+                    left: Box::new(left),
+                    op: op_token,
+                    right: Box::new(right),
+                }
+            }
+        };
+
+        Some(expr)
     }
 
     fn parse_expression(&mut self, precedence: Precedence) -> Option<Expression> {
@@ -895,7 +932,6 @@ mod tests {
         };
 
         let body = body.get(0).unwrap();
-        println!("body: {:?}", body);
 
         assert_eq!(params.next().unwrap(), "x");
         assert_eq!(params.next().unwrap(), "y");
@@ -968,5 +1004,56 @@ mod tests {
         };
 
         assert_eq!(str_result, "hello world");
+    }
+
+    #[test]
+    fn array_literals() {
+        let program = new_program("[1, 2 * 2, 3 + 3]").unwrap();
+
+        let Statement::ExpressionStmt(Expression::Array(arr)) = program.first().unwrap() else {
+            panic!();
+        };
+
+        if arr.len() != 3 {
+            panic!();
+        }
+
+        assert_eq!(*arr[0], Expression::Int(1));
+        assert_eq!(
+            *arr[1],
+            Expression::Infix {
+                left: Box::new(Expression::Int(2)),
+                op: Token::Asterisk,
+                right: Box::new(Expression::Int(2)),
+            }
+        );
+        assert_eq!(
+            *arr[2],
+            Expression::Infix {
+                left: Box::new(Expression::Int(3)),
+                op: Token::Plus,
+                right: Box::new(Expression::Int(3)),
+            }
+        );
+    }
+
+    #[test]
+    fn index_expressions() {
+        let program = new_program("myArray[1 + 1]").unwrap();
+
+        let Statement::ExpressionStmt(Expression::Index { left, index }) = program.first().unwrap()
+        else {
+            panic!();
+        };
+
+        assert_eq!(**left, Expression::Ident("myArray".into()));
+        assert_eq!(
+            **index,
+            Expression::Infix {
+                left: Box::new(Expression::Int(1)),
+                op: Token::Plus,
+                right: Box::new(Expression::Int(1))
+            }
+        );
     }
 }

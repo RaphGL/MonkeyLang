@@ -33,6 +33,8 @@ pub enum Token {
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
 
     // keywords
     Function,
@@ -85,6 +87,8 @@ impl Display for Token {
                 Token::RParen => ")",
                 Token::LBrace => "{",
                 Token::RBrace => "}",
+                Token::LBracket => "[",
+                Token::RBracket => "]",
 
                 // keywords
                 Token::Function => "fn",
@@ -148,6 +152,8 @@ impl<'a> Lexer<'a> {
             '+' => Token::Plus,
             '{' => Token::LBrace,
             '}' => Token::RBrace,
+            '[' => Token::LBracket,
+            ']' => Token::RBracket,
             '-' => Token::Minus,
 
             '!' => match self.chars.peek() {
@@ -273,6 +279,7 @@ mod tests {
             10 != 9;
             "foobar"
             "foo bar"
+            [1, 2];
         "#;
 
         let expected_tokens = [
@@ -353,6 +360,14 @@ mod tests {
             Token::Semicolon,
             Token::Str("foobar".into()),
             Token::Str("foo bar".into()),
+            // [1, 2]
+            Token::LBracket,
+            Token::Int("1".into()),
+            Token::Comma,
+            Token::Int("2".into()),
+            Token::RBracket,
+            Token::Semicolon,
+            // must always be at the end of test
             Token::Eof,
         ];
 

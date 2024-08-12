@@ -14,6 +14,8 @@ pub enum Object {
     Int(i64),
     Bool(bool),
     Str(String),
+    Array(Vec<Box<Object>>),
+
     Return(Box<Object>),
     Error(String),
     Builtin(String, BuiltinFn),
@@ -26,12 +28,35 @@ pub enum Object {
     Null,
 }
 
+impl Object {
+    fn is_error(&self) -> bool {
+        match self {
+            Object::Error(_) => true,
+            _ => false,
+        }
+    }
+}
+
 impl Display for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Int(int) => write!(f, "{int}"),
             Self::Bool(boolean) => write!(f, "{boolean}"),
             Self::Str(string) => write!(f, "\"{string}\""),
+            Self::Array(array) => {
+                write!(f, "[ ")?;
+                for (i, item) in array.iter().enumerate() {
+                    item.fmt(f)?;
+                    if i != array.len() - 1 {
+                        write!(f, ", ")?;
+                    } else {
+                        write!(f, " ")?;
+                    }
+                }
+                write!(f, "]")?;
+                Ok(())
+            }
+
             Self::Null => write!(f, "null"),
             Self::Builtin(fn_name, _) => write!(f, "builtin: {fn_name}"),
             Self::Return(ret) => ret.fmt(f),
@@ -64,7 +89,7 @@ pub fn eval(program: &Program, env: EnvCell) -> Object {
             return *obj;
         }
 
-        if let Object::Error(_) = result {
+        if result.is_error() {
             return result;
         }
     }
@@ -76,7 +101,7 @@ pub fn eval_statement(stmt: &Statement, env: EnvCell) -> Object {
     match stmt {
         Statement::Let { name, value } => {
             let value = eval_expression(value, Rc::clone(&env));
-            if let Object::Error(_) = value {
+            if value.is_error() {
                 return value;
             }
 
@@ -258,6 +283,45 @@ fn eval_expression(expr: &Expression, env: EnvCell) -> Object {
             }
         }
 
+        Expression::Array(arr) => {
+            let mut new_arr = Vec::new();
+            for item in arr {
+                new_arr.push(Box::new(eval_expression(item, Rc::clone(&env))));
+            }
+
+            Object::Array(new_arr)
+        }
+
+        Expression::Index { left, index } => {
+            let left = eval_expression(left, Rc::clone(&env));
+            if left.is_error() {
+                return left;
+            }
+
+            let index = eval_expression(index, Rc::clone(&env));
+            if index.is_error() {
+                return index;
+            }
+
+            if matches!(left, Object::Array(_)) && matches!(index, Object::Int(_)) {
+                let Object::Array(array) = left else {
+                    return Object::Error(format!("unexpected object type, found {left}"));
+                };
+
+                let Object::Int(idx) = index else {
+                    return Object::Error(format!("unexpected indexing object: {index}"));
+                };
+
+                if idx < 0 || idx > (array.len() - 1) as i64 {
+                    Object::Null
+                } else {
+                    *array[idx as usize].clone()
+                }
+            } else {
+                Object::Error(format!("index operator not supported: {left}"))
+            }
+        }
+
         Expression::If {
             condition,
             consequence,
@@ -281,7 +345,7 @@ fn eval_expression(expr: &Expression, env: EnvCell) -> Object {
 
         Expression::Call { function, args } => {
             let func = eval_expression(function, Rc::clone(&env));
-            if let Object::Error(_) = func {
+            if func.is_error() {
                 return func;
             }
 
@@ -531,9 +595,9 @@ mod tests {
             let env = Environment::new();
             let ret = eval(&program, env);
 
-            let Object::Error(_) = ret else {
+            if ret.is_error() {
                 panic!();
-            };
+            }
         }
     }
 
@@ -640,11 +704,55 @@ mod tests {
             let env = Environment::new();
             let ret = eval(&program, env);
 
-            if matches!(expected, Object::Error(_)) {
-                assert!(matches!(ret, Object::Error(_)));
+            if expected.is_error() {
+                assert!(ret.is_error());
             } else {
                 assert!(ret == expected);
             }
+        }
+    }
+
+    #[test]
+    fn array_literals() {
+        let program = new_program("[1, 2 * 2, 3 + 3]").unwrap();
+        let env = Environment::new();
+        let Object::Array(arr) = eval(&program, env) else {
+            panic!();
+        };
+
+        assert_eq!(arr.len(), 3);
+        assert_eq!(*arr[0], Object::Int(1));
+        assert_eq!(*arr[1], Object::Int(4));
+        assert_eq!(*arr[2], Object::Int(6));
+    }
+
+    #[test]
+    fn array_index_expressions() {
+        let tests = [
+            ("[1, 2, 3][0]", Object::Int(1)),
+            ("[1, 2, 3][1]", Object::Int(2)),
+            ("[1, 2, 3][2]", Object::Int(3)),
+            ("let i = 0; [1][i];", Object::Int(1)),
+            ("[1, 2, 3][1 + 1];", Object::Int(3)),
+            ("let myArray = [1, 2, 3]; myArray[2];", Object::Int(3)),
+            (
+                "let myArray = [1, 2, 3]; myArray[0] + myArray[1] + myArray[2];",
+                Object::Int(6),
+            ),
+            (
+                "let myArray = [1, 2, 3]; let i = myArray[0]; myArray[i]",
+                Object::Int(2),
+            ),
+            ("[1, 2, 3][3]", Object::Null),
+            ("[1, 2, 3][-1]", Object::Null),
+        ];
+
+        for (input, expected) in tests {
+            let program = new_program(input).unwrap();
+            let env = Environment::new();
+            let ret = eval(&program, env);
+
+            assert_eq!(ret, expected);
         }
     }
 }
