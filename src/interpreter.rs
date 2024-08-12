@@ -595,7 +595,7 @@ mod tests {
             let env = Environment::new();
             let ret = eval(&program, env);
 
-            if ret.is_error() {
+            if !ret.is_error() {
                 panic!();
             }
         }
