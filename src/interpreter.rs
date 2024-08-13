@@ -115,6 +115,9 @@ pub fn eval_statement(stmt: &Statement, env: EnvCell) -> Object {
         Statement::Return(return_val) => {
             if let Some(return_val) = return_val {
                 let return_val = eval_expression(return_val, env);
+                if return_val.is_error() {
+                    return return_val;
+                }
                 Object::Return(Box::new(return_val))
             } else {
                 Object::Null
@@ -126,9 +129,8 @@ pub fn eval_statement(stmt: &Statement, env: EnvCell) -> Object {
 
             for stmt in block {
                 result = eval_statement(&stmt, Rc::clone(&env));
-                match result {
-                    Object::Return(_) | Object::Error(_) => return result,
-                    _ => (),
+                if matches!(result, Object::Return(_) | Object::Error(_)) {
+                    return result;
                 }
             }
 
@@ -214,6 +216,10 @@ fn eval_expression(expr: &Expression, env: EnvCell) -> Object {
 
         Expression::PrefixNot(right) => {
             let result = eval_expression(right, env);
+            if result.is_error() {
+                return result;
+            }
+
             match result {
                 Object::Bool(bool) => Object::Bool(!bool),
                 Object::Null => Object::Bool(true),
@@ -265,16 +271,18 @@ fn eval_expression(expr: &Expression, env: EnvCell) -> Object {
                 }
 
                 Object::Str(left) => {
-                    if *op != Token::Plus {
-                        return Object::Error(format!("invalid string operator {}", *op));
-                    }
                     let Object::Str(right) = right else {
                         return Object::Error(format!(
                             "type mismatch: expected string on right-hand side found {right}"
                         ));
                     };
 
-                    Object::Str(left + &right)
+                    match *op {
+                        Token::Plus => Object::Str(left + &right),
+                        Token::Eq => Object::Bool(left == right),
+                        Token::NotEq => Object::Bool(left != right),
+                        _ => Object::Error(format!("invalid string operator {}", *op)),
+                    }
                 }
 
                 _ => Object::Error(format!(

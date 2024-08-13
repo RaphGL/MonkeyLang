@@ -249,6 +249,7 @@ impl<'a> Parser<'a> {
         }
 
         if self.next_token != Token::RParen {
+            self.peek_error(Token::RParen);
             None
         } else {
             self.next_token();
@@ -258,6 +259,7 @@ impl<'a> Parser<'a> {
 
     fn parse_fn_literal(&mut self) -> Option<Expression> {
         if self.next_token != Token::LParen {
+            self.peek_error(Token::LParen);
             return None;
         }
         self.next_token();
@@ -265,6 +267,7 @@ impl<'a> Parser<'a> {
         let params = self.parse_fn_params();
 
         if self.next_token != Token::LBrace {
+            self.peek_error(Token::LBrace);
             return None;
         }
         self.next_token();
@@ -280,7 +283,7 @@ impl<'a> Parser<'a> {
     fn parse_expression_list(&mut self, end: Token) -> Option<Vec<Expression>> {
         if self.next_token == end {
             self.next_token();
-            return None;
+            return Some(Vec::new());
         }
         self.next_token();
 
@@ -294,6 +297,7 @@ impl<'a> Parser<'a> {
         }
 
         if self.next_token != end {
+            self.peek_error(end);
             return None;
         }
         self.next_token();
@@ -302,9 +306,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_call_expression(&mut self, function: Expression) -> Option<Expression> {
+        let args = self.parse_expression_list(Token::RParen)?;
+
         Some(Expression::Call {
             function: Box::new(function),
-            args: self.parse_expression_list(Token::RParen),
+            args: if args.is_empty() { None } else { Some(args) },
         })
     }
 
@@ -389,6 +395,7 @@ impl<'a> Parser<'a> {
                 };
 
                 if self.next_token != Token::RBracket {
+                    self.peek_error(Token::RBracket);
                     return None;
                 }
                 self.next_token();
